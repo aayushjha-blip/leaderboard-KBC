@@ -120,6 +120,7 @@ button.btn{
 }
 button.btn:hover{background:var(--card-hi);color:#fff;border-color:rgba(255,255,255,.2)}
 button.btn.on{background:rgba(245,194,75,.14);border-color:rgba(245,194,75,.4);color:var(--gold-hi)}
+button.btn:disabled{opacity:.5;cursor:default;background:var(--card);border-color:var(--line);color:var(--text-faint)}
 
 /* ---------- Hero ---------- */
 .hero{text-align:center;padding:34px 0 26px}
@@ -267,6 +268,8 @@ button.btn.on{background:rgba(245,194,75,.14);border-color:rgba(245,194,75,.4);c
 .foot{margin-top:24px;display:flex;justify-content:center;gap:14px;flex-wrap:wrap;
   font-size:11px;color:var(--text-faint);font-weight:600;letter-spacing:.02em}
 .foot a{color:var(--text-dim);text-decoration:none;border-bottom:1px dotted var(--text-faint)}
+@keyframes stampflash{0%{color:var(--gold-hi)}100%{color:var(--text-faint)}}
+.foot .flash{animation:stampflash 1.5s ease-out}
 
 /* ---------- Responsive ---------- */
 @media(max-width:900px){
@@ -327,7 +330,7 @@ button.btn.on{background:rgba(245,194,75,.14);border-color:rgba(245,194,75,.4);c
     <div class="controls">
       <div class="pill live" id="livePill"><i class="dot"></i><span id="liveText">Connecting</span></div>
       <div class="pill" id="nextPill">Refresh in --s</div>
-      <button class="btn" id="refreshBtn">Refresh now</button>
+      <button class="btn" type="button" id="refreshBtn">Refresh now</button>
     </div>
   </div>
 
@@ -767,6 +770,9 @@ function fetchGvizJsonp(){
 async function load(){
   if (busy) return;
   busy = true;
+  const btn = $('refreshBtn');
+  btn.disabled = true;
+  btn.textContent = 'Refreshing…';
   try {
     const { grid, url } = await fetchCsv();
     const next = buildFromGrid(grid);
@@ -780,8 +786,13 @@ async function load(){
     FAILED = false;
     $('errBanner').hidden = true;
     $('demoBanner').hidden = true;
-    $('stampNote').textContent = 'Last updated ' + new Date().toLocaleTimeString('en-IN',
+    const stamp = $('stampNote');
+    stamp.textContent = 'Last updated ' + new Date().toLocaleTimeString('en-IN',
       { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+    // Re-trigger the flash so a refresh is visible even when no position changed.
+    stamp.classList.remove('flash');
+    void stamp.offsetWidth;
+    stamp.classList.add('flash');
   } catch (e){
     $('livePill').className = 'pill stale';
     $('liveText').textContent = 'Offline';
@@ -798,6 +809,8 @@ async function load(){
   } finally {
     busy = false;
     countdown = CONFIG.REFRESH_SECONDS;
+    btn.disabled = false;
+    btn.textContent = 'Refresh now';
   }
 }
 
