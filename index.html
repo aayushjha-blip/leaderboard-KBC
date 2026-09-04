@@ -194,6 +194,7 @@ button.btn:disabled{opacity:.5;cursor:default;background:var(--card);border-colo
 /* ---------- Board ---------- */
 .boardhead{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:12px;flex-wrap:wrap}
 .boardhead h2{margin:0;font-size:13px;font-weight:800;letter-spacing:.2em;text-transform:uppercase;color:var(--text-dim)}
+.daytag{margin-left:10px;padding-left:10px;border-left:1px solid var(--line);color:var(--text-faint);font-weight:700}
 .search{
   display:flex;align-items:center;gap:8px;padding:9px 14px;border-radius:999px;
   background:var(--card);border:1px solid var(--line);min-width:210px;
@@ -350,7 +351,7 @@ button.btn:disabled{opacity:.5;cursor:default;background:var(--card);border-colo
   <div class="podium" id="podium"></div>
 
   <div class="boardhead">
-    <h2>Full Standings</h2>
+    <h2>Full Standings<span class="daytag" id="dayTag"></span></h2>
     <div class="search">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#6F6690" stroke-width="2.4" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.6-3.6"/></svg>
       <input id="q" type="search" placeholder="Find your name" autocomplete="off">
@@ -389,6 +390,7 @@ const CONFIG = {
   PUBLISHED_CSV_URL: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vT9Z0XwaS2tCZP_Th97ANEqPS7pTuCLcrSqGMl6Vv_kWBILMRIeglQ8-fyZTjbBs7spi3JDRZJk2MYD/pub?gid=0&single=true&output=csv',
 
   REFRESH_SECONDS: 30,      // poll interval
+  TODAY_ONLY: true,         // board covers today's attempts only; false = all time
   DEDUPE_BY_ID: true,       // one row per SM ID, keeping their best attempt
   MAX_ROWS: 300             // safety cap on rendered rows
 };
@@ -436,7 +438,7 @@ function parseCSV(text){
    4. COLUMN MAPPING  -  header driven, order independent
    ================================================================ */
 const ALIASES = {
-  ts:        ['timestamp','time stamp','submitted at','submission time','date'],
+  ts:        ['quiz attempt time','attempt time','timestamp','time stamp','submitted at','submission time'],
   smid:      ['sm id','smid','sm_id','user id','userid','customer id','id'],
   name:      ['name','player','participant','full name','player name'],
   attempted: ['questions attempted','question attempted','attempted','q attempted','total questions'],
@@ -504,14 +506,41 @@ function fmtTime(sec){
   return h ? `${h}:${p(m)}:${p(s)}` : `${m}:${p(s)}`;
 }
 
-function toMillis(v){
+// Google writes a whole timestamp column in one locale, so infer whether
+// slash dates are day-first or month-first once from the column, instead of
+// guessing per row and silently reading 9/2 as 2 September or 9 February.
+function detectDateOrder(values){
+  for (const v of values){
+    const m = String(v).match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+    if (!m) continue;
+    if (+m[1] > 12) return 'dmy';
+    if (+m[2] > 12) return 'mdy';
+  }
+  return 'dmy';
+}
+
+function toMillis(v, order){
   if (!v) return 0;
-  const t = Date.parse(String(v).replace(' ', 'T'));
-  if (Number.isFinite(t)) return t;
-  // dd/mm/yyyy hh:mm:ss  (Google Forms India locale)
-  const m = String(v).match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})[ ,]*(\d{1,2}):(\d{2})(?::(\d{2}))?/);
-  if (m) return new Date(+m[3], +m[2]-1, +m[1], +m[4], +m[5], +(m[6]||0)).getTime();
+  const s = String(v).trim();
+  if (!s || s.toUpperCase() === 'NA') return 0;
+  // yyyy-mm-dd hh:mm:ss and other ISO-ish forms
+  const iso = Date.parse(s.replace(' ', 'T'));
+  if (Number.isFinite(iso)) return iso;
+  const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})[ ,]*(\d{1,2}):?(\d{2})?:?(\d{2})?/);
+  if (m){
+    const day   = order === 'mdy' ? +m[2] : +m[1];
+    const month = order === 'mdy' ? +m[1] : +m[2];
+    return new Date(+m[3], month-1, day, +(m[4]||0), +(m[5]||0), +(m[6]||0)).getTime();
+  }
   return 0;
+}
+
+function isToday(ms){
+  if (!ms) return false;
+  const d = new Date(ms), n = new Date();
+  return d.getFullYear() === n.getFullYear()
+      && d.getMonth()    === n.getMonth()
+      && d.getDate()     === n.getDate();
 }
 
 /* ================================================================
@@ -526,6 +555,7 @@ function buildFromGrid(grid){
   const idx = mapColumns(grid[0]);
   const body = grid.slice(1);
   const get = (r, k) => idx[k] === -1 ? '' : (r[idx[k]] ?? '');
+  const order = detectDateOrder(body.map(r => get(r, 'ts')));
 
   let list = body.map(r => {
     const correct   = toNumber(get(r,'correct'));
@@ -536,9 +566,17 @@ function buildFromGrid(grid){
       attempted,
       correct: correct === null ? 0 : correct,
       timeSec: toSeconds(get(r,'time')),
-      tsMs: toMillis(get(r,'ts'))
+      tsMs: toMillis(get(r,'ts'), order)
     };
   }).filter(p => p.name !== 'Unnamed contestant' || p.smid || p.correct > 0);
+
+  if (CONFIG.TODAY_ONLY){
+    const before = list.length;
+    list = list.filter(p => isToday(p.tsMs));
+    if (before !== list.length){
+      console.info('[leaderboard] ' + (before - list.length) + ' attempt(s) from other days hidden');
+    }
+  }
 
   if (CONFIG.DEDUPE_BY_ID){
     const best = new Map();
@@ -582,6 +620,10 @@ let DATA = [];
 let FAILED = false;
 
 function renderAll(){
+  const tag = $('dayTag');
+  if (tag) tag.textContent = CONFIG.TODAY_ONLY
+    ? new Date().toLocaleDateString('en-IN', { day:'numeric', month:'short' })
+    : 'all time';
   renderKpis(DATA);
   renderPodium(DATA);
   renderRows(DATA);
@@ -631,7 +673,11 @@ function renderRows(d){
 
   const box = $('rows');
   if (!list.length){
-    let ico = '🪑', h = 'The hot seat is still empty', p = 'As soon as the first entry comes in, it shows up here.';
+    let ico = '🪑',
+        h = CONFIG.TODAY_ONLY ? 'No entries yet today' : 'The hot seat is still empty',
+        p = CONFIG.TODAY_ONLY
+              ? 'The board covers today only. The first attempt today shows up here.'
+              : 'As soon as the first entry comes in, it shows up here.';
     if (d.length){ ico = '🔍'; h = 'No contestant matches that search'; p = 'Try a different spelling.'; }
     else if (FAILED){ ico = '📡'; h = 'Standings are not available right now'; p = 'They will appear as soon as the connection recovers.'; }
     box.innerHTML = `<div class="empty"><div class="ico">${ico}</div><h3>${h}</h3><p>${p}</p></div>`;
